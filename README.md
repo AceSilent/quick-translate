@@ -2,12 +2,14 @@
 
 Claude Code 的翻译 mod，用 Google 翻译：
 
-- **发送前翻译提示词**：输入框上方有一行设置，可以打开或关闭"发送前翻译"，并选择译成哪种语言。Claude 只读到译文；你的消息下面用一个代码块显示原文，方便复制（比如用快照撤回后，输入框里是译文，可以从这里复制原文）。
+- **发送前翻译提示词**：输入框上方有一行设置，可以打开或关闭"发送前翻译"，并选择译成哪种语言。Claude 只读到译文。你的消息气泡里显示的就是译文，下面一行显示"原文：……"，可以从这里复制（比如用快照撤回后，输入框里是译文）。翻译失败时气泡里是原文，下面也没有这一行，一眼就能看出来。
 - **翻译 Claude 的回答**：每段回答下面有一个"翻译"按钮，点了在下方显示译文，再点一次收起。回答本来就是目标语言时，改译成"发送译成"的语言。代码块不发给 Google，原样保留。
+
+界面有中文、日本語、English、Français、Deutsch、Italiano、Español 七种语言，默认跟随系统语言（先看 `LANG` 等环境变量，没有就读 macOS 的系统语言，都没有就用英语），也可以在输入框上方那一行手动选。翻译支持 10 种语言：简体中文、繁體中文、English、日本語、한국어、Français、Deutsch、Italiano、Español、Русский。
 
 `/fanyi` 也能切换"发送前翻译"。设置保存在 `~/.config/quick-translate/settings.json`，所有会话共用：在一个会话里改了，其他已经开着的会话几秒内也会跟着变。
 
-A Claude Code mod that translates your prompts before sending and adds a translate button under each reply, using Google Translate.
+A Claude Code mod that translates your prompts before sending and adds a translate button under each reply, using Google Translate. Its interface speaks Chinese, Japanese, English, French, German, Italian and Spanish, following your system language.
 
 ## 安装
 
@@ -31,7 +33,7 @@ claude plugin install quick-translate --marketplace AceSilent/quick-translate
 
 ## 设置
 
-- 语言在输入框上方那一行里选。
+- 发送语言、回答语言和界面语言都在输入框上方那一行里选。
 - 可选：Google Cloud Translation API key。不填就用免费的 `translate.googleapis.com` 接口。免费接口是非官方的，按 IP 限流，用量大或共用代理 IP 时可能返回 429。填了 key 就改用官方 Cloud Translation API v2，费用记在你自己的 Google Cloud 项目上：
 
 ```bash

@@ -4,13 +4,17 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { TranslateSettings, Translation } from '../types'
 
 import { sameLanguage, translate } from './google'
+import { STRINGS, UI_LANGS, uiLangOf } from './i18n'
+import type { Strings } from './i18n'
 
-const DEFAULTS: TranslateSettings = { isOn: false, promptLang: 'en', replyLang: 'zh-CN' }
+const DEFAULTS: TranslateSettings = { isOn: false, promptLang: 'en', replyLang: 'zh-CN', uiLang: 'auto' }
 
 const settings = atom({ plugin: 'quick-translate', key: 'settings' } as const, DEFAULTS)
-const originals = atom({ plugin: 'quick-translate', key: 'originals' } as const, null)
+const systemLocale = atom({ plugin: 'quick-translate', key: 'systemLocale' } as const, '')
+const sentPrompts = atom({ plugin: 'quick-translate', key: 'sentPrompts' } as const, null)
 const replies = atom({ plugin: 'quick-translate', key: 'replies' } as const, null)
 
+// What Google translates to and from, each under its own name.
 const LANGS = [
   { value: 'en', label: 'English' },
   { value: 'zh-CN', label: '简体中文' },
@@ -19,6 +23,7 @@ const LANGS = [
   { value: 'ko', label: '한국어' },
   { value: 'fr', label: 'Français' },
   { value: 'de', label: 'Deutsch' },
+  { value: 'it', label: 'Italiano' },
   { value: 'es', label: 'Español' },
   { value: 'ru', label: 'Русский' },
 ] as const
@@ -45,10 +50,41 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function normalize(raw: Partial<TranslateSettings> | undefined): TranslateSettings {
-  const { isOn, promptLang, replyLang } = { ...DEFAULTS, ...raw }
+function stringsOf(now: TranslateSettings, locale: string): Strings {
+  return STRINGS[uiLangOf(now.uiLang === 'auto' ? locale : now.uiLang)]
+}
 
-  return { isOn: isOn === true, promptLang: String(promptLang), replyLang: String(replyLang) }
+// The interface's words as the settings and the system ask, read so a drawing redraws on a change.
+async function uiStrings($: EngineInterface): Promise<Strings> {
+  return stringsOf(await read($, settings), await read($, systemLocale))
+}
+
+// The system's language: the locale variables, else macOS's own setting; '' when neither says.
+async function detectLocale($: EngineInterface): Promise<string> {
+  const fromEnv = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG'))
+  if (fromEnv && !/^(C|POSIX)([.@]|$)/.test(fromEnv)) return fromEnv
+
+  try {
+    const run = await $.process.run(['defaults', 'read', '-g', 'AppleLocale'])
+    if (run.exitCode === 0) return run.stdout.trim()
+  } catch {
+    // Not macOS, or nothing to run it with.
+  }
+
+  return ''
+}
+
+function normalize(raw: Partial<TranslateSettings> | undefined): TranslateSettings {
+  const { isOn, promptLang, replyLang, uiLang } = { ...DEFAULTS, ...raw }
+
+  return { isOn: isOn === true, promptLang: String(promptLang), replyLang: String(replyLang), uiLang: String(uiLang) }
+}
+
+// What a first run starts from: replies in the system's language.
+function firstSettings(locale: string): TranslateSettings {
+  const ui = uiLangOf(locale)
+
+  return { ...DEFAULTS, replyLang: ui === 'zh' ? 'zh-CN' : ui }
 }
 
 // One file for every session and every copy of the mod: `$.store` is kept per
@@ -72,8 +108,11 @@ async function saveSettings($: EngineInterface, next: TranslateSettings): Promis
 async function syncSettings($: EngineInterface): Promise<TranslateSettings> {
   const path = await settingsPath($)
   if (!(await $.fs.exists(path))) {
-    // No shared file yet: start it from what this copy had saved.
-    return saveSettings($, normalize((await $.store.get('settings')) as Partial<TranslateSettings> | undefined))
+    // No shared file yet: start it from what this copy had saved, or from the system.
+    const legacy = (await $.store.get('settings')) as Partial<TranslateSettings> | undefined
+    const first = legacy ? normalize(legacy) : firstSettings(await read($, systemLocale))
+
+    return saveSettings($, first)
   }
 
   const { mtimeMs } = await $.fs.stat(path)
@@ -121,11 +160,13 @@ export const register: Register = (on, options) => {
   const apiKey = options.apiKey ? String(options.apiKey) : undefined
 
   on('session.start', async ($, e, next) => {
-    await syncSettings($)
+    const locale = await detectLocale($)
+    await update($, systemLocale, () => locale)
+    const now = await syncSettings($)
     $.clock.every(3000, () => void syncSettings($))
     await $.command.register({
       name: 'fanyi',
-      description: '开关：发送前翻译提示词',
+      description: stringsOf(now, locale).commandDescription,
     })
 
     return next(e)
@@ -133,8 +174,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'fanyi' }, async $ => {
     const now = await changeSettings($, { isOn: !(await read($, settings)).isOn })
+    const ui = await uiStrings($)
 
-    return { text: now.isOn ? `发送前翻译：开（译成 ${langName(now.promptLang)}）` : '发送前翻译：关' }
+    return { text: now.isOn ? ui.commandOn(langName(now.promptLang)) : ui.switchOff }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -153,29 +195,34 @@ export const register: Register = (on, options) => {
         return next(e)
       }
 
-      await update($, memberOf(originals, { requestId: textId(out.text) }), () => e.text)
+      // Found again by either text: a surface may draw the row as stored or as typed.
+      const sent = { original: e.text, translation: out.text }
+      await update($, memberOf(sentPrompts, { requestId: textId(out.text) }), () => sent)
+      await update($, memberOf(sentPrompts, { requestId: textId(e.text) }), () => sent)
 
       return next({ ...e, text: out.text })
     } catch (err) {
-      $.ui.toast(`翻译失败，已发送原文：${errorText(err)}`)
+      $.ui.toast((await uiStrings($)).sentOriginal(errorText(err)))
 
       return next(e)
     }
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const original = await read($, memberOf(originals, { requestId: textId(e.props.text) }))
-    const row = await next(e)
-    if (original === null) return row
+    const sent = await read($, memberOf(sentPrompts, { requestId: textId(e.props.text) }))
+    if (sent === null) return next(e)
 
-    // A code block: the whole original, wrapped, easy to select and copy.
-    const { Box, Code, Text } = $.ui.resolve(e)
+    // The bubble holds what Claude read; the line under it, what was typed.
+    const row = await next({ ...e, props: { ...e.props, text: sent.translation } })
+    const ui = await uiStrings($)
+    const { Box, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
         {row}
-        <Text dimColor>原文</Text>
-        <Code source={original} />
+        <Text dimColor>
+          {ui.original}：{sent.original}
+        </Text>
       </Box>
     )
   })
@@ -186,18 +233,19 @@ export const register: Register = (on, options) => {
     if (e.props.isSummary || text.trim() === '') return row
 
     const tr = await read($, memberOf(replies, e))
+    const ui = await uiStrings($)
     const { Box, Button, Markdown, Text } = $.ui.resolve(e)
 
     const label =
       tr === null
-        ? '翻译'
+        ? ui.translate
         : tr.status === 'busy'
-          ? '翻译中…'
+          ? ui.translating
           : tr.status === 'error'
-            ? '重试翻译'
+            ? ui.retry
             : tr.isShown
-              ? '收起译文'
-              : '显示译文'
+              ? ui.hide
+              : ui.show
 
     return (
       <Box flexDirection="column">
@@ -206,10 +254,10 @@ export const register: Register = (on, options) => {
         <Box marginTop={1}>
           <Button key="translate" label={label} onPress={() => translateReply($, e.requestId, text, apiKey)} />
         </Box>
-        {tr?.status === 'error' && <Text color="error">翻译失败：{tr.message}</Text>}
+        {tr?.status === 'error' && <Text color="error">{ui.failed(tr.message)}</Text>}
         {tr?.status === 'done' && tr.isShown && (
           <Box flexDirection="column" paddingLeft={2}>
-            <Text dimColor>译文（{langName(tr.lang)}）</Text>
+            <Text dimColor>{ui.translationIn(langName(tr.lang))}</Text>
             <Markdown text={tr.text} />
           </Box>
         )}
@@ -222,6 +270,7 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || (e.surface !== 'terminal' && e.surface !== 'desktop')) return next(e)
 
     const now = await read($, settings)
+    const ui = stringsOf(now, await read($, systemLocale))
     const { Box, Button, Select } = $.ui.resolve(e)
 
     return (
@@ -229,22 +278,29 @@ export const register: Register = (on, options) => {
         <Button
           key="prompt-toggle"
           plain
-          label={now.isOn ? '发送前翻译：开' : '发送前翻译：关'}
+          label={now.isOn ? ui.switchOn : ui.switchOff}
           onPress={async () => changeSettings($, { isOn: !(await read($, settings)).isOn })}
         />
         <Select
           key="prompt-lang"
-          label="发送译成"
+          label={ui.sendIn}
           options={LANGS}
           value={now.promptLang}
           onSelect={value => changeSettings($, { promptLang: value })}
         />
         <Select
           key="reply-lang"
-          label="回答译成"
+          label={ui.replyIn}
           options={LANGS}
           value={now.replyLang}
           onSelect={value => changeSettings($, { replyLang: value })}
+        />
+        <Select
+          key="ui-lang"
+          label={ui.uiLang}
+          options={[{ value: 'auto', label: ui.followSystem }, ...UI_LANGS]}
+          value={now.uiLang}
+          onSelect={value => changeSettings($, { uiLang: value })}
         />
       </Box>
     )

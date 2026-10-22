@@ -8,14 +8,20 @@ export type TranslateSettings = {
   isOn: boolean
   promptLang: string
   replyLang: string
+  // An interface language (`zh`, `ja`, ...), or `auto` to follow the system.
+  uiLang: string
 }
+
+export type SentPrompt = { original: string; translation: string }
 
 declare module 'claude-code' {
   interface PluginState {
     'quick-translate': {
       settings: TranslateSettings
-      // A sent prompt's text as typed, by the id of the translation it was sent as.
-      originals: StateFamily<string | null>
+      // The system's locale as this session found it (`zh_CN`), '' when unknown.
+      systemLocale: string
+      // A prompt sent translated, by the id of either its text as typed or its translation.
+      sentPrompts: StateFamily<SentPrompt | null>
       replies: StateFamily<Translation | null>
     }
   }

@@ -68,7 +68,7 @@ async function requestFree($: Http, text: string, target: string) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
     body: `q=${encodeURIComponent(text)}`,
   })
-  if (!res.ok) throw new Error(`Google 翻译返回 HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`Google Translate: HTTP ${res.status}`)
 
   const data = JSON.parse(res.text) as [Array<[string | null]> | null, unknown, string | null]
   const translated = (data[0] ?? []).map(segment => segment[0] ?? '').join('')
@@ -82,7 +82,7 @@ async function requestCloud($: Http, text: string, target: string, apiKey: strin
     headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey },
     body: JSON.stringify({ q: text, target, format: 'text' }),
   })
-  if (!res.ok) throw new Error(`Cloud Translation 返回 HTTP ${res.status}`)
+  if (!res.ok) throw new Error(`Cloud Translation: HTTP ${res.status}`)
 
   const data = JSON.parse(res.text) as {
     data: { translations: Array<{ translatedText: string; detectedSourceLanguage?: string }> }
