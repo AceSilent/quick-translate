@@ -1,0 +1,20 @@
+{
+  "name": "quick-translate",
+  "version": "0.2.0",
+  "description": "一键翻译：发送前翻译提示词（输入框上方可选语言和发送方式），给每段回答加「翻译」按钮（Google 翻译）",
+  "author": {
+    "name": "AceSilent"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/AceSilent/quick-translate",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "apiKey": {
+      "type": "string",
+      "title": "Google Cloud API key（可选）",
+      "description": "留空走免费的 translate.googleapis.com；填了走 Cloud Translation API v2",
+      "required": false,
+      "sensitive": true
+    }
+  }
+}

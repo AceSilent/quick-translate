@@ -1,0 +1,12 @@
+{
+  "name": "acesilent",
+  "owner": { "name": "AceSilent" },
+  "description": "AceSilent's Claude Code mods",
+  "plugins": [
+    {
+      "name": "quick-translate",
+      "source": "./",
+      "description": "一键翻译：发送前翻译提示词，给每段回答加「翻译」按钮（Google 翻译）"
+    }
+  ]
+}
