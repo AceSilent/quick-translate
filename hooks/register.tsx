@@ -45,11 +45,53 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-async function changeSettings($: EngineInterface, change: Partial<TranslateSettings>) {
-  const next = await update($, settings, now => ({ ...now, ...change }))
-  await $.store.set('settings', next)
+function normalize(raw: Partial<TranslateSettings> | undefined): TranslateSettings {
+  const { isOn, promptLang, replyLang } = { ...DEFAULTS, ...raw }
 
-  return next
+  return { isOn: isOn === true, promptLang: String(promptLang), replyLang: String(replyLang) }
+}
+
+// One file for every session and every copy of the mod: `$.store` is kept per
+// copy (an installed one, one in development), so settings saved there stayed there.
+async function settingsPath($: EngineInterface): Promise<string> {
+  return `${(await $.env.get('HOME')) ?? ''}/.config/quick-translate/settings.json`
+}
+
+// The file's mtime as this copy last read or wrote it; a reload starts over.
+let seenMtime = -1
+
+async function saveSettings($: EngineInterface, next: TranslateSettings): Promise<TranslateSettings> {
+  const path = await settingsPath($)
+  await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
+  seenMtime = (await $.fs.stat(path)).mtimeMs
+
+  return update($, settings, () => next)
+}
+
+// Brings state up to the file, so a change made in another session shows here too.
+async function syncSettings($: EngineInterface): Promise<TranslateSettings> {
+  const path = await settingsPath($)
+  if (!(await $.fs.exists(path))) {
+    // No shared file yet: start it from what this copy had saved.
+    return saveSettings($, normalize((await $.store.get('settings')) as Partial<TranslateSettings> | undefined))
+  }
+
+  const { mtimeMs } = await $.fs.stat(path)
+  if (mtimeMs === seenMtime) return read($, settings)
+
+  try {
+    const fresh = normalize(JSON.parse(await $.fs.read(path)) as Partial<TranslateSettings>)
+    seenMtime = mtimeMs
+
+    return update($, settings, () => fresh)
+  } catch {
+    // Mid-write or edited by hand into something unreadable: keep what we have.
+    return read($, settings)
+  }
+}
+
+async function changeSettings($: EngineInterface, change: Partial<TranslateSettings>) {
+  return saveSettings($, { ...(await syncSettings($)), ...change })
 }
 
 // `requestId` is the reply block's, so each block keeps its own translation.
@@ -62,7 +104,7 @@ async function translateReply($: EngineInterface, requestId: string, text: strin
     return
   }
 
-  const { promptLang, replyLang } = await read($, settings)
+  const { promptLang, replyLang } = await syncSettings($)
   await update($, member, (): Translation => ({ status: 'busy' }))
   try {
     let out = await translate($, text, replyLang, apiKey)
@@ -79,9 +121,8 @@ export const register: Register = (on, options) => {
   const apiKey = options.apiKey ? String(options.apiKey) : undefined
 
   on('session.start', async ($, e, next) => {
-    const stored = (await $.store.get('settings')) as Partial<TranslateSettings> | undefined
-    const { isOn, promptLang, replyLang } = { ...DEFAULTS, ...stored }
-    await update($, settings, () => ({ isOn, promptLang, replyLang }))
+    await syncSettings($)
+    $.clock.every(3000, () => void syncSettings($))
     await $.command.register({
       name: 'fanyi',
       description: '开关：发送前翻译提示词',
@@ -98,8 +139,11 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     const isTyped = TYPED.has(e.origin.kind) && !e.command && !e.isMeta
-    const { isOn, promptLang } = await read($, settings)
-    if (!isTyped || !isOn || e.text.trim() === '') {
+    if (!isTyped || e.text.trim() === '') {
+      return next(e)
+    }
+    const { isOn, promptLang } = await syncSettings($)
+    if (!isOn) {
       return next(e)
     }
 
@@ -158,10 +202,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {row}
-        <Box>
-          <Button key="translate" plain label={label} onPress={() => translateReply($, e.requestId, text, apiKey)} />
+        {/* A real button, set apart from the reply, so it does not read as its last line. */}
+        <Box marginTop={1}>
+          <Button key="translate" label={label} onPress={() => translateReply($, e.requestId, text, apiKey)} />
         </Box>
-        {tr?.status === 'error' && <Text color="red">翻译失败：{tr.message}</Text>}
+        {tr?.status === 'error' && <Text color="error">翻译失败：{tr.message}</Text>}
         {tr?.status === 'done' && tr.isShown && (
           <Box flexDirection="column" paddingLeft={2}>
             <Text dimColor>译文（{langName(tr.lang)}）</Text>

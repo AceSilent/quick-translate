@@ -2,6 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+const SETTINGS_FILE = '/home/me/.config/quick-translate/settings.json'
+
 // Stands in for translate.googleapis.com: Chinese becomes English, anything
 // else becomes `[tl] text`, and every request is kept for the test to read.
 function fakeGoogle(on: On, opts: { status?: number } = {}) {
@@ -28,6 +30,40 @@ function fakeGoogle(on: On, opts: { status?: number } = {}) {
   return requests
 }
 
+// A home folder in memory, holding the settings file every session shares,
+// and the per-copy store an older version saved its settings in.
+function fakeHome(on: On, store?: Record<string, unknown>) {
+  const files = new Map<string, { text: string; mtimeMs: number }>()
+  let tick = 1
+
+  mock.env(on, { HOME: '/home/me' })
+  mock.store(on, store)
+  on('fs.exists', (_, e) => ({ value: files.has(e.path) }))
+  on('fs.stat', (_, e) => {
+    const file = files.get(e.path)
+
+    return file
+      ? { value: { kind: 'file', size: file.text.length, mtimeMs: file.mtimeMs, isLink: false } }
+      : { deny: `${e.path}: no such file` }
+  })
+  on('fs.read', (_, e) => {
+    const file = files.get(e.path)
+
+    return file ? { value: file.text } : { deny: `${e.path}: no such file` }
+  })
+  on('fs.write', (_, e) => {
+    files.set(e.path, { text: e.text, mtimeMs: tick++ })
+
+    return { value: undefined }
+  })
+
+  return {
+    settings: () => JSON.parse(files.get(SETTINGS_FILE)?.text ?? 'null') as unknown,
+    // Another session saving its settings.
+    saveElsewhere: (value: unknown) => files.set(SETTINGS_FILE, { text: JSON.stringify(value), mtimeMs: tick++ }),
+  }
+}
+
 function engineRow(on: On) {
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -37,10 +73,27 @@ function engineRow(on: On) {
 }
 
 async function start($: Engine, on: On) {
-  mock.store(on)
+  const clock = mock.clock(on)
   on('command.register', () => ({ value: { command: 'fanyi' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  return clock
+}
+
+function promptSink(on: On) {
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+
+  return sent
+}
+
+function typed($: Engine, text: string) {
+  return $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
 }
 
 const REPLY = {
@@ -49,8 +102,23 @@ const REPLY = {
   props: { text: 'Run this:\n```sh\nnpm test\n```\nIt should pass.', isFirstOfReply: true },
 } as const
 
+const BAND = {
+  plugin: 'quick-translate',
+  surface: 'desktop',
+  component: 'AbovePrompt',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 10,
+    bodyColumns: 80,
+    scroll: { offset: 0, bodyRows: 10 },
+    view: {},
+  },
+} as const
+
 test('a reply gets a translate button, on every surface', async ($, on) => {
   const requests = fakeGoogle(on)
+  fakeHome(on)
   engineRow(on)
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
@@ -76,6 +144,7 @@ test('a reply gets a translate button, on every surface', async ($, on) => {
 
 test('a reply already in Chinese is translated to English instead', async ($, on) => {
   const requests = fakeGoogle(on)
+  fakeHome(on)
   engineRow(on)
 
   const ui = await $.ui.mount({
@@ -92,6 +161,7 @@ test('a reply already in Chinese is translated to English instead', async ($, on
 
 test('a failed request shows the error and offers a retry', async ($, on) => {
   fakeGoogle(on, { status: 429 })
+  fakeHome(on)
   engineRow(on)
 
   const ui = await $.ui.mount({ ...REPLY, surface: 'desktop' })
@@ -102,43 +172,15 @@ test('a failed request shows the error and offers a retry', async ($, on) => {
   await ui.unmount()
 })
 
-const BAND = {
-  plugin: 'quick-translate',
-  surface: 'desktop',
-  component: 'AbovePrompt',
-  props: {
-    hasSurvey: false,
-    isWorking: false,
-    maxRows: 10,
-    bodyColumns: 80,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  },
-} as const
-
-function promptSink(on: On) {
-  const sent: { text: string; context: readonly string[] }[] = []
-  on('prompt.submit', (_, e) => {
-    sent.push({ text: e.text, context: e.context ?? [] })
-
-    return { text: e.text }
-  })
-
-  return sent
-}
-
-function typed($: Engine, text: string) {
-  return $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
-}
-
 test('with the switch on, a typed prompt is sent translated and the row keeps the original', async ($, on) => {
   fakeGoogle(on)
+  fakeHome(on)
   engineRow(on)
   const sent = promptSink(on)
   await start($, on)
 
   await typed($, '你好')
-  expect(sent.map(s => s.text)).toEqual(['你好'])
+  expect(sent).toEqual(['你好'])
 
   const band = await $.ui.mount(BAND)
   expect((await band.find({ key: 'prompt-toggle' }))?.text).toBe('发送前翻译：关')
@@ -148,7 +190,7 @@ test('with the switch on, a typed prompt is sent translated and the row keeps th
   await typed($, '你好')
   await typed($, 'already English')
   await $.prompt.submit({ text: '任务完成', origin: { kind: 'task-notification' }, wait: false })
-  expect(sent.map(s => s.text)).toEqual(['你好', 'Hello', 'already English', '任务完成'])
+  expect(sent).toEqual(['你好', 'Hello', 'already English', '任务完成'])
 
   const row = await $.ui.mount({
     plugin: 'quick-translate',
@@ -162,48 +204,57 @@ test('with the switch on, a typed prompt is sent translated and the row keeps th
   await band.unmount()
 })
 
-test('the band picks the languages, and they are kept for the next session', async ($, on) => {
+test('the band picks the languages and saves them where every session reads them', async ($, on) => {
   const requests = fakeGoogle(on)
+  const home = fakeHome(on)
   engineRow(on)
   const sent = promptSink(on)
-  // The store, kept here rather than by mock.store, so the test reads what was saved.
-  const saved: unknown[] = []
-  on('store.get', () => ({ value: undefined }))
-  on('store.set', (_, e) => {
-    if (e.key === 'settings') saved.push(e.value)
-
-    return { value: undefined }
-  })
-  on('command.register', () => ({ value: { command: 'fanyi' } }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await start($, on)
 
   const band = await $.ui.mount(BAND)
   await band.press({ key: 'prompt-toggle' })
   await band.select({ key: 'prompt-lang', value: 'ja' })
   await band.select({ key: 'reply-lang', value: 'ko' })
   expect((await band.find({ key: 'prompt-lang' }))?.props.value).toBe('ja')
+  expect(home.settings()).toEqual({ isOn: true, promptLang: 'ja', replyLang: 'ko' })
 
   await typed($, '你好')
-  expect(sent.map(s => s.text)).toEqual(['[ja] 你好'])
+  expect(sent).toEqual(['[ja] 你好'])
 
   const reply = await $.ui.mount({ ...REPLY, surface: 'desktop' })
   await reply.press({ key: 'translate' })
   expect(requests.at(-1)?.tl).toBe('ko')
-  expect((await reply.find({ type: 'Text', text: /译文/ }))?.text).toBe('译文（한국어）')
-
-  expect(saved.at(-1)).toEqual({ isOn: true, promptLang: 'ja', replyLang: 'ko' })
-  expect(await band.find({ key: 'send-mode' })).toBeUndefined()
+  expect((await reply.find({ type: 'Text', text: /^译文（/ }))?.text).toBe('译文（한국어）')
   await reply.unmount()
   await band.unmount()
 })
 
-test('the switch is remembered across sessions', async ($, on) => {
-  // A store written by 0.2.0 still holds `mode`; it is read past.
-  mock.store(on, { settings: { isOn: true, promptLang: 'en', replyLang: 'zh-CN', mode: 'attach' } })
-  on('command.register', () => ({ value: { command: 'fanyi' } }))
-  on('session.start', (_, e) => ({ cwd: e.cwd }))
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+test('a change saved in another session shows here within seconds', async ($, on) => {
+  fakeGoogle(on)
+  const home = fakeHome(on)
+  engineRow(on)
+  const sent = promptSink(on)
+  const clock = await start($, on)
+
+  const band = await $.ui.mount(BAND)
+  expect((await band.find({ key: 'prompt-toggle' }))?.text).toBe('发送前翻译：关')
+
+  home.saveElsewhere({ isOn: true, promptLang: 'ja', replyLang: 'zh-CN' })
+  await clock.advance(3000)
+  expect((await band.find({ key: 'prompt-toggle' }))?.text).toBe('发送前翻译：开')
+  expect((await band.find({ key: 'prompt-lang' }))?.props.value).toBe('ja')
+
+  // A prompt reads the file itself, without waiting for the next look.
+  home.saveElsewhere({ isOn: true, promptLang: 'ko', replyLang: 'zh-CN' })
+  await typed($, '你好')
+  expect(sent).toEqual(['[ko] 你好'])
+  await band.unmount()
+})
+
+test('settings an older version saved carry over to the shared file', async ($, on) => {
+  const home = fakeHome(on, { settings: { isOn: true, promptLang: 'en', replyLang: 'zh-CN', mode: 'attach' } })
+  await start($, on)
+  expect(home.settings()).toEqual({ isOn: true, promptLang: 'en', replyLang: 'zh-CN' })
 
   const result = await $.command.run({
     command: 'fanyi',
@@ -212,4 +263,5 @@ test('the switch is remembered across sessions', async ($, on) => {
     presentation: { isFullscreen: false, columns: 80 },
   })
   expect(result).toMatchObject({ text: '发送前翻译：关' })
+  expect(home.settings()).toEqual({ isOn: false, promptLang: 'en', replyLang: 'zh-CN' })
 })

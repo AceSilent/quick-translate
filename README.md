@@ -5,7 +5,7 @@ Claude Code 的翻译 mod，用 Google 翻译：
 - **发送前翻译提示词**：输入框上方有一行设置，可以打开或关闭"发送前翻译"，并选择译成哪种语言。Claude 只读到译文；你的消息下面用一个代码块显示原文，方便复制（比如用快照撤回后，输入框里是译文，可以从这里复制原文）。
 - **翻译 Claude 的回答**：每段回答下面有一个"翻译"按钮，点了在下方显示译文，再点一次收起。回答本来就是目标语言时，改译成"发送译成"的语言。代码块不发给 Google，原样保留。
 
-`/fanyi` 也能切换"发送前翻译"。设置会在会话之间保留。
+`/fanyi` 也能切换"发送前翻译"。设置保存在 `~/.config/quick-translate/settings.json`，所有会话共用：在一个会话里改了，其他已经开着的会话几秒内也会跟着变。
 
 A Claude Code mod that translates your prompts before sending and adds a translate button under each reply, using Google Translate.
 
