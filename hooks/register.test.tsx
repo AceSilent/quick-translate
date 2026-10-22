@@ -156,7 +156,8 @@ test('with the switch on, a typed prompt is sent translated and the row keeps th
     component: 'UserMessage',
     props: { text: 'Hello', origin: { kind: 'composer' }, isExpanded: false },
   })
-  expect((await row.find({ type: 'Text', text: /原文/ }))?.text).toBe('原文：你好')
+  expect(await row.find({ type: 'Text', text: '原文' })).toBeDefined()
+  expect((await row.find({ type: 'Code' }))?.text).toBe('你好')
   await row.unmount()
   await band.unmount()
 })
@@ -191,37 +192,15 @@ test('the band picks the languages, and they are kept for the next session', asy
   expect(requests.at(-1)?.tl).toBe('ko')
   expect((await reply.find({ type: 'Text', text: /译文/ }))?.text).toBe('译文（한국어）')
 
-  expect(saved.at(-1)).toEqual({ isOn: true, promptLang: 'ja', replyLang: 'ko', mode: 'replace' })
+  expect(saved.at(-1)).toEqual({ isOn: true, promptLang: 'ja', replyLang: 'ko' })
+  expect(await band.find({ key: 'send-mode' })).toBeUndefined()
   await reply.unmount()
   await band.unmount()
 })
 
-test('"原文+译文" keeps the prompt as typed and hands the model the translation beside it', async ($, on) => {
-  fakeGoogle(on)
-  engineRow(on)
-  const sent = promptSink(on)
-  await start($, on)
-
-  const band = await $.ui.mount(BAND)
-  await band.press({ key: 'prompt-toggle' })
-  await band.select({ key: 'send-mode', value: 'attach' })
-
-  await typed($, '你好')
-  expect(sent).toEqual([{ text: '你好', context: ['The message above, translated into English:\n\nHello'] }])
-
-  const row = await $.ui.mount({
-    plugin: 'quick-translate',
-    surface: 'desktop',
-    component: 'UserMessage',
-    props: { text: '你好', origin: { kind: 'composer' }, isExpanded: false },
-  })
-  expect((await row.find({ type: 'Text', text: /译文/ }))?.text).toBe('已附English译文：Hello')
-  await row.unmount()
-  await band.unmount()
-})
-
 test('the switch is remembered across sessions', async ($, on) => {
-  mock.store(on, { settings: { isOn: true, promptLang: 'en', replyLang: 'zh-CN', mode: 'replace' } })
+  // A store written by 0.2.0 still holds `mode`; it is read past.
+  mock.store(on, { settings: { isOn: true, promptLang: 'en', replyLang: 'zh-CN', mode: 'attach' } })
   on('command.register', () => ({ value: { command: 'fanyi' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })

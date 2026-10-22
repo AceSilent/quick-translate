@@ -1,7 +1,7 @@
 {
   "name": "quick-translate",
-  "version": "0.2.0",
-  "description": "一键翻译：发送前翻译提示词（输入框上方可选语言和发送方式），给每段回答加「翻译」按钮（Google 翻译）",
+  "version": "0.3.0",
+  "description": "一键翻译：发送前翻译提示词（输入框上方可选语言），给每段回答加「翻译」按钮（Google 翻译）",
   "author": {
     "name": "AceSilent"
   },

@@ -1,14 +1,14 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { PromptNote, SendMode, TranslateSettings, Translation } from '../types'
+import type { TranslateSettings, Translation } from '../types'
 
 import { sameLanguage, translate } from './google'
 
-const DEFAULTS: TranslateSettings = { isOn: false, promptLang: 'en', replyLang: 'zh-CN', mode: 'replace' }
+const DEFAULTS: TranslateSettings = { isOn: false, promptLang: 'en', replyLang: 'zh-CN' }
 
 const settings = atom({ plugin: 'quick-translate', key: 'settings' } as const, DEFAULTS)
-const notes = atom({ plugin: 'quick-translate', key: 'notes' } as const, null)
+const originals = atom({ plugin: 'quick-translate', key: 'originals' } as const, null)
 const replies = atom({ plugin: 'quick-translate', key: 'replies' } as const, null)
 
 const LANGS = [
@@ -21,11 +21,6 @@ const LANGS = [
   { value: 'de', label: 'Deutsch' },
   { value: 'es', label: 'Español' },
   { value: 'ru', label: 'Русский' },
-] as const
-
-const MODES = [
-  { value: 'replace', label: '只发译文' },
-  { value: 'attach', label: '原文+译文' },
 ] as const
 
 // Prompts the person typed; task notifications, peers and plugins stay as sent.
@@ -57,10 +52,6 @@ async function changeSettings($: EngineInterface, change: Partial<TranslateSetti
   return next
 }
 
-async function notePrompt($: EngineInterface, rowText: string, note: PromptNote) {
-  await update($, memberOf(notes, { requestId: textId(rowText) }), () => note)
-}
-
 // `requestId` is the reply block's, so each block keeps its own translation.
 async function translateReply($: EngineInterface, requestId: string, text: string, apiKey?: string) {
   const member = memberOf(replies, { requestId })
@@ -89,7 +80,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const stored = (await $.store.get('settings')) as Partial<TranslateSettings> | undefined
-    await update($, settings, () => ({ ...DEFAULTS, ...stored }))
+    const { isOn, promptLang, replyLang } = { ...DEFAULTS, ...stored }
+    await update($, settings, () => ({ isOn, promptLang, replyLang }))
     await $.command.register({
       name: 'fanyi',
       description: '开关：发送前翻译提示词',
@@ -106,7 +98,7 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     const isTyped = TYPED.has(e.origin.kind) && !e.command && !e.isMeta
-    const { isOn, promptLang, mode } = await read($, settings)
+    const { isOn, promptLang } = await read($, settings)
     if (!isTyped || !isOn || e.text.trim() === '') {
       return next(e)
     }
@@ -117,14 +109,7 @@ export const register: Register = (on, options) => {
         return next(e)
       }
 
-      if (mode === 'attach') {
-        await notePrompt($, e.text, { label: `已附${langName(promptLang)}译文`, text: out.text })
-        const attached = `The message above, translated into ${langName(promptLang)}:\n\n${out.text}`
-
-        return next({ ...e, context: [...(e.context ?? []), attached] })
-      }
-
-      await notePrompt($, out.text, { label: '原文', text: e.text })
+      await update($, memberOf(originals, { requestId: textId(out.text) }), () => e.text)
 
       return next({ ...e, text: out.text })
     } catch (err) {
@@ -135,18 +120,18 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const note = await read($, memberOf(notes, { requestId: textId(e.props.text) }))
+    const original = await read($, memberOf(originals, { requestId: textId(e.props.text) }))
     const row = await next(e)
-    if (note === null) return row
+    if (original === null) return row
 
-    const { Box, Text } = $.ui.resolve(e)
+    // A code block: the whole original, wrapped, easy to select and copy.
+    const { Box, Code, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
         {row}
-        <Text dimColor>
-          {note.label}：{note.text}
-        </Text>
+        <Text dimColor>原文</Text>
+        <Code source={original} />
       </Box>
     )
   })
@@ -208,13 +193,6 @@ export const register: Register = (on, options) => {
           options={LANGS}
           value={now.promptLang}
           onSelect={value => changeSettings($, { promptLang: value })}
-        />
-        <Select
-          key="send-mode"
-          label="发送内容"
-          options={MODES}
-          value={now.mode}
-          onSelect={value => changeSettings($, { mode: value as SendMode })}
         />
         <Select
           key="reply-lang"
